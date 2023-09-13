@@ -87,6 +87,7 @@ class Job:
         self.allow_seats = info.get('seats')
         self.allow_train_numbers = info.get('train_numbers')
         self.except_train_numbers = info.get('except_train_numbers')
+        self.start_time = info.get('start_time')
         self.members = list(map(str, info.get('members')))
         self.member_num = len(self.members)
         self.member_num_take = self.member_num
@@ -110,6 +111,12 @@ class Job:
     def run(self):
         self.start()
 
+    def check_current_time(self):
+        n_time = datetime.datetime.now()
+        start_time = datetime.datetime.strptime(self.start_time, "%Y-%m-%d-%H-%M-%S")
+        return n_time > start_time - timedelta(seconds=20)
+        
+    
     def start(self):
         """
         处理单个任务
@@ -128,7 +135,12 @@ class Job:
                     self.handle_response(response)
                     QueryLog.add_query_time_log(time=response.elapsed.total_seconds(), is_cdn=self.is_cdn)
                     if not self.is_alive: return
-                    self.safe_stay()
+                    if self.check_current_time():
+                        # 满足条件开始抢
+                        self.safe_stay()
+                    else:
+                        interval = round(random.uniform(0, 5))
+                        stay_second(3 + interval); 
                     if is_main_thread():
                         QueryLog.flush(sep='\t\t', publish=False)
             if not Config().QUERY_JOB_THREAD_ENABLED:
@@ -173,6 +185,19 @@ class Job:
         self.is_cdn = False
         return self.query.session.get(url, timeout=self.query_time_out, allow_redirects=False)
 
+    def sort_results(self,response):
+        all_tickets_info = []
+        results = self.get_results(response)
+        if not results:
+            return False
+        for result in results:
+            self.ticket_info = ticket_info = result.split('|')
+            if not self.is_trains_number_valid():  # 车次是否有效
+                continue
+            all_tickets_info.append(ticket_info)
+        all_tickets_info = sorted(all_tickets_info, key=lambda x: list(map(str.upper, self.allow_train_numbers)).index(x[self.INDEX_TRAIN_NUMBER]))
+        return all_tickets_info
+    
     def handle_response(self, response):
         """
         错误判断
@@ -183,13 +208,12 @@ class Job:
         :param result:
         :return:
         """
-        results = self.get_results(response)
-        if not results:
+        
+        all_tickets_info = self.sort_results(response)
+        if not all_tickets_info:
             return False
-        for result in results:
-            self.ticket_info = ticket_info = result.split('|')
-            if not self.is_trains_number_valid():  # 车次是否有效
-                continue
+        for ticket_info in all_tickets_info:
+            self.ticket_info = ticket_info 
             QueryLog.add_log(QueryLog.MESSAGE_QUERY_LOG_OF_EVERY_TRAIN.format(self.get_info_of_train_number()))
             if not self.is_has_ticket(ticket_info):
                 continue
